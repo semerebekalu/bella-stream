@@ -338,6 +338,8 @@ function App() {
 
     hasReceivedDisplayRef.current = false
     pendingIceRef.current = []
+    remoteDisplayStreamIdsRef.current.clear()
+    remoteCameraStreamIdsRef.current.clear()
     makingOfferRef.current = false
     ignoreOfferRef.current = false
     setPeerStatus('No live share yet')
@@ -1362,7 +1364,14 @@ function App() {
             return
           }
 
+          if (offerCollision && politeRef.current) {
+            await Promise.all([
+              peer.setLocalDescription({ type: 'rollback' }),
+              peer.setRemoteDescription(payload.description),
+            ])
+          } else {
           await peer.setRemoteDescription(payload.description)
+          }
           await flushPendingIce(peer)
 
           if (payload.description.type === 'offer') {
