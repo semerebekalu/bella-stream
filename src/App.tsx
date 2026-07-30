@@ -52,12 +52,13 @@ type SignalPayload = {
   cameraStreamIds?: string[]
 }
 
+const SOCKET_FROM_ENV = String(import.meta.env.VITE_SOCKET_URL ?? '')
+  .trim()
+  .replace(/\/$/, '')
+
 const SERVER_URL = (() => {
-  const fromEnv = String(import.meta.env.VITE_SOCKET_URL ?? '')
-    .trim()
-    .replace(/\/$/, '')
-  if (fromEnv) {
-    return fromEnv
+  if (SOCKET_FROM_ENV) {
+    return SOCKET_FROM_ENV
   }
 
   const host = window.location.hostname
@@ -68,6 +69,11 @@ const SERVER_URL = (() => {
   // Same-origin when the Node server also serves the built client.
   return window.location.origin
 })()
+
+const NEEDS_SOCKET_SETUP =
+  !SOCKET_FROM_ENV &&
+  typeof window !== 'undefined' &&
+  /netlify\.app$/i.test(window.location.hostname)
 
 const iceServers: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -1496,6 +1502,17 @@ function App() {
             <span className="pill ok">Chrome tab share</span>
           )}
         </div>
+
+        {NEEDS_SOCKET_SETUP ? (
+          <div className="fallback-banner" style={{ marginTop: 16 }}>
+            <strong>Signaling server not configured</strong>
+            <p>
+              Netlify only hosts the UI. Deploy the Socket.IO server on Render, then in Netlify set{' '}
+              <code>VITE_SOCKET_URL</code> to that Render URL and trigger a new deploy. Until then rooms
+              cannot connect.
+            </p>
+          </div>
+        ) : null}
       </section>
 
       <section className="setup-grid">
