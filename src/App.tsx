@@ -584,6 +584,42 @@ function App() {
         peer.addTrack(track, stream)
       }
     }
+
+    void optimizePeerSenders(peer)
+  }
+
+  async function optimizePeerSenders(peer: RTCPeerConnection) {
+    await Promise.all(
+      peer.getSenders().map(async (sender) => {
+        const track = sender.track
+        if (!track) {
+          return
+        }
+
+        try {
+          const params = sender.getParameters()
+          const encodings = params.encodings?.length ? [...params.encodings] : [{}]
+          const nextEncoding = { ...encodings[0] }
+
+          if (track.kind === 'video') {
+            const isDisplay = track.contentHint === 'detail'
+            nextEncoding.maxBitrate = isDisplay ? 8_000_000 : 2_500_000
+            nextEncoding.maxFramerate = isDisplay ? 30 : 24
+            params.degradationPreference = isDisplay ? 'maintain-resolution' : 'balanced'
+          }
+
+          if (track.kind === 'audio') {
+            nextEncoding.maxBitrate = 128_000
+            params.degradationPreference = 'balanced'
+          }
+
+          params.encodings = [nextEncoding]
+          await sender.setParameters(params)
+        } catch {
+          // Some browsers reject sender tuning; best effort only.
+        }
+      }),
+    )
   }
 
   function requestMediaSync() {
@@ -731,13 +767,35 @@ function App() {
 
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
+        video: {
+          frameRate: { ideal: 30, max: 60 },
+          width: { ideal: 1920, max: 3840 },
+          height: { ideal: 1080, max: 2160 },
+        },
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 2,
+          sampleRate: 48000,
+        },
         // Chrome built-in options (safely ignored elsewhere).
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'include',
         systemAudio: 'include',
       } as DisplayMediaStreamOptions)
+
+      await Promise.all(
+        stream.getVideoTracks().map((track) =>
+          track
+            .applyConstraints({
+              frameRate: { ideal: 30, max: 60 },
+              width: { ideal: 1920, max: 3840 },
+              height: { ideal: 1080, max: 2160 },
+            })
+            .catch(() => undefined),
+        ),
+      )
 
       displayStreamRef.current = stream
       setSharingDisplay(true)
@@ -935,14 +993,43 @@ function App() {
       let stream: MediaStream | null = null
 
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+            frameRate: { ideal: 24, max: 30 },
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+            sampleRate: 48000,
+          },
+        })
       } catch {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true })
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: false,
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              channelCount: 1,
+              sampleRate: 48000,
+            },
+          })
           setStatusMessage('No camera found. Audio only.')
         } catch {
           try {
-            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                width: { ideal: 1280, max: 1920 },
+                height: { ideal: 720, max: 1080 },
+                frameRate: { ideal: 24, max: 30 },
+              },
+              audio: false,
+            })
             setStatusMessage('No microphone found. Video only.')
           } catch (innerError) {
             throw innerError
