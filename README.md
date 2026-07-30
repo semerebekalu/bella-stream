@@ -15,9 +15,19 @@ npm run dev
 
 Open http://localhost:5173 — the Socket.IO server runs on http://localhost:3001.
 
-## Deploy (Netlify + Socket server)
+## Deploy (Vercel or Netlify + Socket server)
 
-Netlify hosts the **static React app**. Rooms, chat, and WebRTC signaling need a **persistent Node Socket.IO server** (Render, Railway, or Fly). Netlify Functions cannot keep WebSocket rooms alive.
+The React UI can live on **Vercel** or **Netlify**. Rooms/chat/WebRTC still need a **persistent Socket.IO server** (Render/Railway/Fly).
+
+### Frontend (Vercel)
+
+1. Import `semerebekalu/bella-stream` in Vercel (or keep your existing link)
+2. Framework preset: Vite · Output: `dist`
+3. Environment variable:
+   - `VITE_SOCKET_URL=https://bella-stream.onrender.com` (your Render URL, no trailing slash)
+4. Redeploy after changing env vars (Vite bakes them in at build time)
+
+`vercel.json` is included for SPA invite-link routing.
 
 ### 1. Deploy the signaling server (Render example)
 
