@@ -376,19 +376,20 @@ function App() {
     const streamId = streams[0]?.id ?? ''
     const label = track.label.toLowerCase()
 
-    const markedDisplay = streamId && remoteDisplayStreamIdsRef.current.has(streamId)
-    const markedCamera = streamId && remoteCameraStreamIdsRef.current.has(streamId)
+    const markedDisplay = Boolean(streamId && remoteDisplayStreamIdsRef.current.has(streamId))
+    const markedCamera = Boolean(streamId && remoteCameraStreamIdsRef.current.has(streamId))
     const looksLikeDisplay =
-      markedDisplay ||
       label.includes('screen') ||
       label.includes('window') ||
       label.includes('tab') ||
       label.includes('monitor') ||
-      label.includes('display')
-    const looksLikeCamera =
-      markedCamera || label.includes('camera') || label.includes('webcam')
+      label.includes('display') ||
+      label.includes('web-contents')
 
-    if (looksLikeDisplay || (!looksLikeCamera && !hasReceivedDisplayRef.current)) {
+    // Only route to the main theater when this is clearly a screen/tab share.
+    // Webcam tracks must default to the partner bubble — the old logic treated
+    // the first unknown video as "display", so neither of you saw a camera bubble.
+    if (!markedCamera && (markedDisplay || looksLikeDisplay)) {
       hasReceivedDisplayRef.current = true
       setRemoteDisplayStream(nextStream)
       socketRef.current?.emit('set-mode', {
@@ -483,7 +484,7 @@ function App() {
 
       if (event.track.kind === 'audio') {
         setRemoteAudioStream((current) => {
-          const nextAudio = current ?? new MediaStream()
+          const nextAudio = new MediaStream(current?.getTracks() ?? [])
           if (!nextAudio.getTracks().some((t) => t.id === event.track.id)) {
             nextAudio.addTrack(event.track)
           }
@@ -567,8 +568,15 @@ function App() {
     return syncChainRef.current
   }
 
-  function attachLocalTracks(peer: RTCPeerConnection, stream: MediaStream, _kind: 'display' | 'camera') {
+  function attachLocalTracks(peer: RTCPeerConnection, stream: MediaStream, kind: 'display' | 'camera') {
     for (const track of stream.getTracks()) {
+      if (kind === 'camera' && 'contentHint' in track) {
+        track.contentHint = track.kind === 'video' ? 'motion' : 'speech'
+      }
+      if (kind === 'display' && track.kind === 'video' && 'contentHint' in track) {
+        track.contentHint = 'detail'
+      }
+
       const alreadySending = peer.getSenders().some((sender) => sender.track?.id === track.id)
       if (!alreadySending) {
         peer.addTrack(track, stream)
@@ -950,9 +958,14 @@ function App() {
       setLocalCameraPreview(videoTracks.length ? new MediaStream(videoTracks) : null)
       setCallEnabled(true)
 
-      const peer = getOrCreatePeer()
-      attachLocalTracks(peer, stream, 'camera')
-      void syncOfferNow()
+      // Rebuild the peer offer so the partner definitely receives camera/mic tracks.
+      forceRenegotiateAsOfferer('camera-started')
+      requestMediaSync()
+      setStatusMessage(
+        videoTracks.length
+          ? 'Camera/mic on. Your partner should click Start voice/camera too.'
+          : 'Mic on (no camera). Partner should click Start voice/camera too.',
+      )
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
 
@@ -1735,8 +1748,18 @@ function App() {
                   ) : null}
                   {remoteCameraStream ? (
                     <div className="bubble-card partner">
-                      <video ref={remoteCameraRef} autoPlay playsInline className="bubble-video" />
+                      <video
+                        ref={remoteCameraRef}
+                        autoPlay
+                        playsInline
+                        muted={false}
+                        className="bubble-video"
+                      />
                       <span className="bubble-label">Partner</span>
+                    </div>
+                  ) : callEnabled ? (
+                    <div className="bubble-card partner waiting">
+                      <span className="bubble-label">Waiting for partner camera…</span>
                     </div>
                   ) : null}
                 </div>
