@@ -354,14 +354,16 @@ function App() {
   }
 
   function forceRenegotiateAsOfferer(reason = 'manual', hardReset = false) {
-    const hasLocalMedia = Boolean(displayStreamRef.current || cameraStreamRef.current)
     if (!activeRoomRef.current) {
       return
     }
 
     // Soft path: keep the existing peer alive whenever possible.
-    // Destroying both peers on camera start was racing and killing camera/mic.
-    if (hardReset || peerRef.current?.connectionState === 'failed' || peerRef.current?.connectionState === 'closed') {
+    if (
+      hardReset ||
+      peerRef.current?.connectionState === 'failed' ||
+      peerRef.current?.connectionState === 'closed'
+    ) {
       destroyPeer()
     }
 
@@ -374,30 +376,11 @@ function App() {
       attachLocalTracks(peer, cameraStreamRef.current, 'camera')
     }
 
-    if (!hasLocalMedia) {
-      requestMediaSync()
-      setPeerStatus('Waiting for host media')
-      return
-    }
-
     setPeerStatus(`Syncing (${reason})`)
 
-    // Host creates offers. Guest asks host to re-offer so both cameras land cleanly.
-    if (isHostRef.current) {
-      ensureReceiveTransceivers(peer)
-      void syncOfferNow(true)
-    } else {
-      requestMediaSync()
-    }
-  }
-
-  function ensureReceiveTransceivers(peer: RTCPeerConnection) {
-    // Open receive lines when the host has nothing to send yet, so a guest
-    // camera/mic can still answer into the room.
-    if (peer.getTransceivers().length === 0 && peer.getSenders().every((sender) => !sender.track)) {
-      peer.addTransceiver('video', { direction: 'recvonly' })
-      peer.addTransceiver('audio', { direction: 'recvonly' })
-    }
+    // Either side may offer (perfect negotiation). Also nudge the partner.
+    void syncOfferNow(true)
+    requestMediaSync()
   }
 
   function preferVideoCodecs(peer: RTCPeerConnection) {
@@ -408,7 +391,7 @@ function App() {
       }
 
       const preferred = [...capabilities.codecs].sort((a, b) => {
-        const rank = (codec: RTCRtpCodec) => {
+        const rank = (codec: { mimeType: string }) => {
           const mime = codec.mimeType.toLowerCase()
           if (mime.includes('vp9')) return 0
           if (mime.includes('h264')) return 1
@@ -507,7 +490,7 @@ function App() {
           } else {
             requestMediaSync()
           }
-        }, 500)
+        }, 700)
       }
     }
 
@@ -557,12 +540,8 @@ function App() {
     }
 
     peer.onnegotiationneeded = () => {
-      // Host drives offers. Guest asks host to re-offer after adding tracks.
-      if (isHostRef.current) {
-        void syncOfferNow()
-      } else {
-        requestMediaSync()
-      }
+      // Perfect negotiation: whichever side adds tracks may create an offer.
+      void syncOfferNow()
     }
 
     peerRef.current = peer
@@ -584,40 +563,38 @@ function App() {
     syncChainRef.current = syncChainRef.current
       .catch(() => undefined)
       .then(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, force ? 80 : 200))
+        await new Promise((resolve) => window.setTimeout(resolve, force ? 100 : 200))
         syncQueuedRef.current = false
-
-        // Only the host creates offers. Guests answer and ask the host to re-offer.
-        if (!isHostRef.current) {
-          return
-        }
 
         const peer = getOrCreatePeer()
         if (makingOfferRef.current) {
+          if (force) {
+            window.setTimeout(() => {
+              void syncOfferNow(true)
+            }, 300)
+          }
           return
         }
 
-        if (peer.signalingState !== 'stable') {
-          if (!force) {
-            return
+        // Ready for an offer: stable + not ignoring a remote offer.
+        if (peer.signalingState !== 'stable' || ignoreOfferRef.current) {
+          if (force) {
+            window.setTimeout(() => {
+              void syncOfferNow(true)
+            }, 400)
           }
-
-          // Wait briefly for an in-flight answer instead of destroying the peer.
-          await new Promise((resolve) => window.setTimeout(resolve, 250))
-          const stateAfterWait = getOrCreatePeer().signalingState
-          if (stateAfterWait !== 'stable') {
-            return
-          }
+          return
         }
 
         const activePeer = getOrCreatePeer()
-        ensureReceiveTransceivers(activePeer)
         preferVideoCodecs(activePeer)
 
         try {
           makingOfferRef.current = true
           const offer = await activePeer.createOffer()
-          if (activePeer.signalingState !== 'stable') {
+
+          // Glare / state change while creating — abort cleanly.
+          if (activePeer.signalingState !== 'stable' || ignoreOfferRef.current) {
             return
           }
 
@@ -688,14 +665,12 @@ function App() {
 
           if (track.kind === 'video') {
             const isDisplay = track.contentHint === 'detail'
-            // Higher caps for movie tab share; camera stays lighter.
             nextEncoding.maxBitrate = isDisplay ? 12_000_000 : 3_000_000
             nextEncoding.maxFramerate = isDisplay ? 60 : 30
             params.degradationPreference = isDisplay ? 'maintain-resolution' : 'balanced'
           }
 
           if (track.kind === 'audio') {
-            // Movie/tab audio needs more bitrate than voice chat.
             nextEncoding.maxBitrate = track.contentHint === 'music' ? 256_000 : 160_000
             params.degradationPreference = 'maintain-framerate'
           }
@@ -734,11 +709,7 @@ function App() {
       return
     }
 
-    if (isHostRef.current || force) {
-      void syncOfferNow(true)
-    } else {
-      requestMediaSync()
-    }
+    void syncOfferNow(force)
   }
 
   function stopStream(stream: MediaStream | null) {
@@ -840,13 +811,7 @@ function App() {
 
         // Ask the other person to re-send their live media, and push ours if we already have it.
         window.setTimeout(() => {
-          getOrCreatePeer()
-          if (isHostRef.current) {
-            forceRenegotiateAsOfferer('joined-as-host')
-          } else {
-            requestMediaSync()
-            pushLocalMediaIfAny(true)
-          }
+          forceRenegotiateAsOfferer('joined-room')
           socketRef.current?.emit('playback-request', { roomId })
         }, 250)
       },
@@ -1380,12 +1345,7 @@ function App() {
 
         if (type === 'joined') {
           window.setTimeout(() => {
-            getOrCreatePeer()
-            if (isHostRef.current) {
-              forceRenegotiateAsOfferer('peer-joined')
-            } else {
-              requestMediaSync()
-            }
+            forceRenegotiateAsOfferer('peer-joined')
           }, 300)
         }
 
@@ -1400,21 +1360,11 @@ function App() {
 
     socket.on('renegotiate', (payload?: { reason?: string }) => {
       window.setTimeout(() => {
-        getOrCreatePeer()
-        if (isHostRef.current) {
-          forceRenegotiateAsOfferer(payload?.reason ?? 'renegotiate')
-        } else {
-          requestMediaSync()
-          setPeerStatus('Waiting for host sync')
-        }
+        forceRenegotiateAsOfferer(payload?.reason ?? 'renegotiate')
       }, 200)
     })
 
     socket.on('request-media-sync', () => {
-      if (!isHostRef.current) {
-        return
-      }
-
       const peer = getOrCreatePeer()
       if (displayStreamRef.current) {
         attachLocalTracks(peer, displayStreamRef.current, 'display')
@@ -1422,7 +1372,6 @@ function App() {
       if (cameraStreamRef.current) {
         attachLocalTracks(peer, cameraStreamRef.current, 'camera')
       }
-      ensureReceiveTransceivers(peer)
       void syncOfferNow(true)
     })
 
@@ -1915,12 +1864,7 @@ function App() {
                 className="ghost"
                 disabled={!activeRoom}
                 onClick={() => {
-                  if (isHostRef.current) {
-                    forceRenegotiateAsOfferer('manual-resync')
-                  } else {
-                    requestMediaSync()
-                    pushLocalMediaIfAny(true)
-                  }
+                  forceRenegotiateAsOfferer('manual-resync')
                   setStatusMessage('Resync requested. Reconnecting live feed...')
                 }}
               >
@@ -1975,20 +1919,20 @@ function App() {
                       <span className="bubble-label">You</span>
                     </div>
                   ) : null}
-                  {remoteCameraStream ? (
-                    <div className="bubble-card partner">
-                      <video
-                        ref={remoteCameraRef}
-                        autoPlay
-                        playsInline
-                        muted={false}
-                        className="bubble-video"
-                      />
-                      <span className="bubble-label">Partner</span>
-                    </div>
-                  ) : callEnabled ? (
-                    <div className="bubble-card partner waiting">
-                      <span className="bubble-label">Waiting for partner camera…</span>
+                  {callEnabled || remoteCameraStream ? (
+                    <div className={`bubble-card partner ${remoteCameraStream ? '' : 'waiting'}`.trim()}>
+                      {remoteCameraStream ? (
+                        <video
+                          ref={remoteCameraRef}
+                          autoPlay
+                          playsInline
+                          muted={false}
+                          className="bubble-video"
+                        />
+                      ) : null}
+                      <span className="bubble-label">
+                        {remoteCameraStream ? 'Partner' : 'Waiting for partner camera…'}
+                      </span>
                     </div>
                   ) : null}
                 </div>
