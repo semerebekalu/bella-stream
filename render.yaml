@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bella-stream
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: CORS_ORIGIN
+        sync: false
+      - key: NODE_VERSION
+        value: "22"

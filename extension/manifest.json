@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Bella Stream Control",
+  "version": "1.1.0",
+  "description": "Lets Bella Stream pause/play the movie tab and share only the video (not the whole page).",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "externally_connectable": {
+    "matches": [
+      "http://localhost:5173/*",
+      "http://127.0.0.1:5173/*",
+      "http://localhost:3001/*",
+      "http://127.0.0.1:3001/*"
+    ]
+  },
+  "action": {
+    "default_title": "Bella Stream Control"
+  }
+}
